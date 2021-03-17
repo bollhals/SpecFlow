@@ -72,7 +72,7 @@ namespace TechTalk.SpecFlow.RuntimeTests.Infrastructure
 
             _runtimePluginTestExecutionLifecycleEventEmitter.Verify(e => e.RaiseExecutionLifecycleEvent(HookType.BeforeFeature, It.IsAny<IObjectContainer>()));
         }
-        
+
         [Fact]
         public void Should_emit_runtime_plugin_test_execution_lifecycle_event_beforefeature_after_hook_error_and_throw_error()
         {
@@ -95,7 +95,7 @@ namespace TechTalk.SpecFlow.RuntimeTests.Infrastructure
 
             _runtimePluginTestExecutionLifecycleEventEmitter.Verify(e => e.RaiseExecutionLifecycleEvent(HookType.AfterFeature, It.IsAny<IObjectContainer>()));
         }
-        
+
         [Fact]
         public void Should_emit_runtime_plugin_test_execution_lifecycle_event_afterfeature_after_hook_error_and_throw_error()
         {
@@ -118,7 +118,7 @@ namespace TechTalk.SpecFlow.RuntimeTests.Infrastructure
 
             _runtimePluginTestExecutionLifecycleEventEmitter.Verify(e => e.RaiseExecutionLifecycleEvent(HookType.BeforeScenario, It.IsAny<IObjectContainer>()));
         }
-        
+
         [Fact]
         public void Should_emit_runtime_plugin_test_execution_lifecycle_event_beforescenario_after_hook_error_and_throw_error()
         {
@@ -129,7 +129,7 @@ namespace TechTalk.SpecFlow.RuntimeTests.Infrastructure
             {
                 //NOTE: the exception will be re-thrown in the OnAfterLastStep
                 testExecutionEngine.OnScenarioStart();
-                testExecutionEngine.OnAfterLastStep(); 
+                testExecutionEngine.OnAfterLastStep();
             };
 
             act.Should().Throw<Exception>().WithMessage(SimulatedErrorMessage);
@@ -169,7 +169,7 @@ namespace TechTalk.SpecFlow.RuntimeTests.Infrastructure
 
             _runtimePluginTestExecutionLifecycleEventEmitter.Verify(e => e.RaiseExecutionLifecycleEvent(HookType.BeforeStep, It.IsAny<IObjectContainer>()));
         }
-        
+
         [Fact]
         public void Should_emit_runtime_plugin_test_execution_lifecycle_event_beforestep_after_hook_error_and_throw_error()
         {
@@ -198,7 +198,7 @@ namespace TechTalk.SpecFlow.RuntimeTests.Infrastructure
 
             _runtimePluginTestExecutionLifecycleEventEmitter.Verify(e => e.RaiseExecutionLifecycleEvent(HookType.AfterStep, It.IsAny<IObjectContainer>()));
         }
-        
+
         [Fact]
         public void Should_emit_runtime_plugin_test_execution_lifecycle_event_afterstep_after_hook_error_and_throw_error()
         {

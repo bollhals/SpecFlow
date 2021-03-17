@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
 using Io.Cucumber.Messages;
 using TechTalk.SpecFlow.CommonModels;
 
@@ -8,10 +7,9 @@ namespace TechTalk.SpecFlow.CucumberMessages
 {
     public class TestRunResultCollector : ITestRunResultCollector
     {
-        private readonly IDictionary<ScenarioInfo, TestResult> _collectedResults = new Dictionary<ScenarioInfo, TestResult>();
-        public bool IsStarted { get; private set; }
+        private readonly Dictionary<ScenarioInfo, TestResult> _collectedResults = new Dictionary<ScenarioInfo, TestResult>();
 
-        private readonly object _lock = new object();
+        public bool IsStarted { get; private set; }
 
         public void StartCollecting()
         {
@@ -31,7 +29,7 @@ namespace TechTalk.SpecFlow.CucumberMessages
             }
 
 
-            lock (_lock)
+            lock (_collectedResults)
             {
                 _collectedResults.Add(scenarioInfo, testResult);
             }
@@ -44,28 +42,30 @@ namespace TechTalk.SpecFlow.CucumberMessages
                 return Result<TestRunResult>.Failure("Result collection has not been started");
             }
 
+            int passedCount = 0;
+            int failedCount = 0;
+            int skippedCount = 0;
+            int ambiguousCount = 0;
+            int undefinedCount = 0;
+            int resultTotal;
 
-            IGrouping<TestResult.Types.Status, (ScenarioInfo Key, TestResult Value)>[] groups;
-            lock (_lock)
+            lock (_collectedResults)
             {
-                groups = _collectedResults.GroupBy(kv => kv.Value.Status, kv => (kv.Key, kv.Value))
-                                          .ToArray();
+                resultTotal = _collectedResults.Count;
+                foreach (var kvp in _collectedResults)
+                {
+                    switch (kvp.Value.Status)
+                    {
+                        case TestResult.Types.Status.Passed: passedCount++; break;
+                        case TestResult.Types.Status.Failed: failedCount++; break;
+                        case TestResult.Types.Status.Skipped: skippedCount++; break;
+                        case TestResult.Types.Status.Ambiguous: ambiguousCount++; break;
+                        case TestResult.Types.Status.Undefined: undefinedCount++; break;
+                    }
+                }
             }
 
-            var passedCount = groups.SingleOrDefault(g => g.Key == TestResult.Types.Status.Passed)?.Count() ?? 0;
-            var failedCount = groups.SingleOrDefault(g => g.Key == TestResult.Types.Status.Failed)?.Count() ?? 0;
-            var skippedCount = groups.SingleOrDefault(g => g.Key == TestResult.Types.Status.Skipped)?.Count() ?? 0;
-            var ambiguousCount = groups.SingleOrDefault(g => g.Key == TestResult.Types.Status.Ambiguous)?.Count() ?? 0;
-            var undefinedCount = groups.SingleOrDefault(g => g.Key == TestResult.Types.Status.Undefined)?.Count() ?? 0;
-
-            var testRunResult = new TestRunResult(
-                _collectedResults.Count,
-                passedCount,
-                failedCount,
-                skippedCount,
-                ambiguousCount,
-                undefinedCount);
-
+            var testRunResult = new TestRunResult(resultTotal, passedCount, failedCount, skippedCount, ambiguousCount, undefinedCount);
             return Result.Success(testRunResult);
         }
     }

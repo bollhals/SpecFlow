@@ -66,9 +66,9 @@ namespace TechTalk.SpecFlow.Infrastructure
             ITestResultFactory testResultFactory,
             ITestPendingMessageFactory testPendingMessageFactory,
             ITestUndefinedMessageFactory testUndefinedMessageFactory,
-            ITestRunResultCollector testRunResultCollector, 
-            IAnalyticsEventProvider analyticsEventProvider, 
-            IAnalyticsTransmitter analyticsTransmitter, 
+            ITestRunResultCollector testRunResultCollector,
+            IAnalyticsEventProvider analyticsEventProvider,
+            IAnalyticsTransmitter analyticsTransmitter,
             ITestRunnerManager testRunnerManager,
             IRuntimePluginTestExecutionLifecycleEventEmitter runtimePluginTestExecutionLifecycleEventEmitter,
             ITestObjectResolver testObjectResolver = null,
@@ -322,12 +322,12 @@ namespace TechTalk.SpecFlow.Infrastructure
         {
             FireScenarioEvents(HookType.AfterStep);
         }
+
         protected virtual void OnSkipStep()
         {
             _testTracer.TraceStepSkipped();
 
-            var skippedStepHandlers = _contextManager.ScenarioContext.ScenarioContainer.ResolveAll<ISkippedStepHandler>().ToArray();
-            foreach (var skippedStepHandler in skippedStepHandlers)
+            foreach (var skippedStepHandler in _contextManager.ScenarioContext.ScenarioContainer.ResolveAll<ISkippedStepHandler>())
             {
                 skippedStepHandler.Handle(_contextManager.ScenarioContext);
             }
@@ -342,39 +342,54 @@ namespace TechTalk.SpecFlow.Infrastructure
 
         private void FireEvents(HookType hookType)
         {
+            int hooksCount = 0;
+            var hooks = _bindingRegistry.GetHooks(hookType);
+            if (hooks is ICollection<IHookBinding> col)
+            {
+                hooksCount = col.Count;
+                if (hooksCount == 0)
+                {
+                    // Early out, we got no hooks to call
+                    FireRuntimePluginTestExecutionLifecycleEvents(hookType);
+                    return;
+                }
+            }
+
             var stepContext = _contextManager.GetStepContext();
 
-            var matchingHooks = _bindingRegistry.GetHooks(hookType)
-                .Where(hookBinding => !hookBinding.IsScoped ||
-                                      hookBinding.BindingScope.Match(stepContext, out int _));
+            var uniqueBindingMethods = new HashSet<IBindingMethod>();
+            var sortedHooks = new List<IHookBinding>(hooksCount);
+            foreach (var hookBinding in hooks)
+            {
+                if (!hookBinding.IsScoped || hookBinding.BindingScope.Match(stepContext, out _))
+                {
+                    if (uniqueBindingMethods.Add(hookBinding.Method))
+                    {
+                        sortedHooks.Add(hookBinding);
+                    }
+                }
+            }
 
-            //HACK: The InvokeHook requires an IHookBinding that contains the scope as well
-            // if multiple scopes match the same method, we take the first one. 
-            // The InvokeHook uses only the Method anyway...
-            // The only problem could be if the same method is decorated with hook attributes using different order, 
-            // but in this case it is anyway impossible to tell the right ordering.
-            var uniqueMatchingHooks = matchingHooks.GroupBy(hookBinding => hookBinding.Method).Select(g => g.First());
-            Exception hookException = null;
+            sortedHooks.Sort((x, y) => x.HookOrder.CompareTo(y.HookOrder));
             try
             {
                 //Note: if a (user-)hook throws an exception the subsequent hooks of the same type are not executed
-                foreach (var hookBinding in uniqueMatchingHooks.OrderBy(x => x.HookOrder))
+                foreach (var hookBinding in sortedHooks)
                 {
                     InvokeHook(_bindingInvoker, hookBinding, hookType);
                 }
             }
             catch (Exception hookExceptionCaught)
             {
-                hookException = hookExceptionCaught;
-                SetHookError(hookType, hookException);
+                SetHookError(hookType, hookExceptionCaught);
+                throw;
             }
-
-            //Note: plugin-hooks are still executed even if a user-hook failed with an exception
-            //A plugin-hook should not throw an exception under normal circumstances, exceptions are not handled/caught here
-            FireRuntimePluginTestExecutionLifecycleEvents(hookType);
-
-            //Note: the (user-)hook exception (if any) will be thrown after the plugin hooks executed to fail the test with the right error  
-            if (hookException != null) throw hookException;
+            finally
+            {
+                //Note: plugin-hooks are still executed even if a user-hook failed with an exception
+                //A plugin-hook should not throw an exception under normal circumstances, exceptions are not handled/caught here
+                FireRuntimePluginTestExecutionLifecycleEvents(hookType);
+            }
         }
 
         private void FireRuntimePluginTestExecutionLifecycleEvents(HookType hookType)
@@ -396,23 +411,17 @@ namespace TechTalk.SpecFlow.Infrastructure
 
         private IObjectContainer GetHookContainer(HookType hookType)
         {
-            IObjectContainer currentContainer;
             switch (hookType)
             {
                 case HookType.BeforeTestRun:
                 case HookType.AfterTestRun:
-                    currentContainer = TestThreadContainer;
-                    break;
+                    return TestThreadContainer;
                 case HookType.BeforeFeature:
                 case HookType.AfterFeature:
-                    currentContainer = FeatureContext.FeatureContainer;
-                    break;
+                    return FeatureContext.FeatureContainer;
                 default: // scenario scoped hooks
-                    currentContainer = ScenarioContext.ScenarioContainer;
-                    break;
+                    return ScenarioContext.ScenarioContainer;
             }
-
-            return currentContainer;
         }
 
         private SpecFlowContext GetHookContext(HookType hookType)
@@ -444,9 +453,25 @@ namespace TechTalk.SpecFlow.Infrastructure
 
         private object[] ResolveArguments(IHookBinding hookBinding, IObjectContainer currentContainer)
         {
-            if (hookBinding.Method == null || !hookBinding.Method.Parameters.Any())
+            var method = hookBinding.Method;
+            if (method is null)
+            {
                 return null;
-            return hookBinding.Method.Parameters.Select(p => ResolveArgument(currentContainer, p)).ToArray();
+            }
+
+            var parameters = method.Parameters as IBindingParameter[] ?? method.Parameters.ToArray();
+            if (parameters.Length == 0)
+            {
+                return null;
+            }
+
+            var arguments = new object[parameters.Length];
+            for (var i = 0; i < parameters.Length; i++)
+            {
+                arguments[i] = ResolveArgument(currentContainer, parameters[i]);
+            }
+
+            return arguments;
         }
 
         private object ResolveArgument(IObjectContainer container, IBindingParameter parameter)
@@ -550,7 +575,7 @@ namespace TechTalk.SpecFlow.Infrastructure
             if (match.Success)
                 return match;
 
-            if (candidatingMatches.Any())
+            if (candidatingMatches.Count > 0)
             {
                 if (ambiguityReason == StepDefinitionAmbiguityReason.AmbiguousSteps)
                     throw _errorProvider.GetAmbiguousMatchError(candidatingMatches, stepInstance);
@@ -571,38 +596,47 @@ namespace TechTalk.SpecFlow.Infrastructure
 
         private void HandleBlockSwitch(ScenarioBlock block)
         {
-            if (_contextManager == null)
+            var contextManager = _contextManager;
+            if (contextManager is null)
             {
                 throw new ArgumentNullException(nameof(_contextManager));
             }
-            
-            if (_contextManager.ScenarioContext == null)
+
+            var scenarioContext = contextManager.ScenarioContext;
+            if (scenarioContext is null)
             {
                 throw new ArgumentNullException(nameof(_contextManager.ScenarioContext));
             }
 
-            if (_contextManager.ScenarioContext.CurrentScenarioBlock != block)
+            if (scenarioContext.CurrentScenarioBlock != block)
             {
-                if (_contextManager.ScenarioContext.ScenarioExecutionStatus == ScenarioExecutionStatus.OK)
-                    OnBlockEnd(_contextManager.ScenarioContext.CurrentScenarioBlock);
+                if (scenarioContext.ScenarioExecutionStatus == ScenarioExecutionStatus.OK)
+                    OnBlockEnd(scenarioContext.CurrentScenarioBlock);
 
-                _contextManager.ScenarioContext.CurrentScenarioBlock = block;
+                scenarioContext.CurrentScenarioBlock = block;
 
-                if (_contextManager.ScenarioContext.ScenarioExecutionStatus == ScenarioExecutionStatus.OK)
-                    OnBlockStart(_contextManager.ScenarioContext.CurrentScenarioBlock);
+                if (scenarioContext.ScenarioExecutionStatus == ScenarioExecutionStatus.OK)
+                    OnBlockStart(scenarioContext.CurrentScenarioBlock);
             }
         }
 
         private object[] GetExecuteArguments(BindingMatch match)
         {
-            var bindingParameters = match.StepBinding.Method.Parameters.ToArray();
+            var parameter = match.StepBinding.Method.Parameters;
+            var bindingParameters = parameter as IBindingParameter[] ?? parameter.ToArray();
             if (match.Arguments.Length != bindingParameters.Length)
                 throw _errorProvider.GetParameterCountError(match, match.Arguments.Length);
 
-            var arguments = match.Arguments.Select(
-                    (arg, argIndex) => ConvertArg(arg, bindingParameters[argIndex].Type))
-                .ToArray();
+            if (bindingParameters.Length == 0)
+            {
+                return Array.Empty<object>();
+            }
 
+            var arguments = new object[bindingParameters.Length];
+            for (var i = 0; i < arguments.Length; i++)
+            {
+                arguments[i] = ConvertArg(match.Arguments[i], bindingParameters[i].Type);
+            }
             return arguments;
         }
 
@@ -622,7 +656,7 @@ namespace TechTalk.SpecFlow.Infrastructure
         {
             StepDefinitionType stepDefinitionType = stepDefinitionKeyword == StepDefinitionKeyword.And || stepDefinitionKeyword == StepDefinitionKeyword.But
                 ? GetCurrentBindingType()
-                : (StepDefinitionType) stepDefinitionKeyword;
+                : (StepDefinitionType)stepDefinitionKeyword;
             _contextManager.InitializeStepContext(new StepInfo(stepDefinitionType, text, tableArg, multilineTextArg));
             try
             {

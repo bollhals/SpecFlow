@@ -5,26 +5,39 @@ using TechTalk.SpecFlow.Tracing;
 
 namespace TechTalk.SpecFlow
 {
-    public class CultureInfoScope : IDisposable
+#nullable enable
+    public readonly struct CultureInfoScope : IDisposable
     {
-        private readonly CultureInfo originalCultureInfo;
+        private readonly CultureInfo? originalCultureInfo;
 
-        public CultureInfoScope(CultureInfo cultureInfo)
+        public CultureInfoScope(CultureInfo? cultureInfo)
         {
-            if (cultureInfo != null && !cultureInfo.Equals(Thread.CurrentThread.CurrentCulture))
+            originalCultureInfo = cultureInfo;
+        }
+
+        public CultureInfoScope(FeatureContext? featureContext)
+        {
+            originalCultureInfo = null;
+            var cultureInfo = featureContext?.BindingCulture;
+            if (cultureInfo is not null)
             {
-                if (cultureInfo.IsNeutralCulture)
+                var current = Thread.CurrentThread.CurrentCulture;
+                if (!cultureInfo.Equals(current))
                 {
-                    cultureInfo = LanguageHelper.GetSpecificCultureInfo(cultureInfo);
+                    if (cultureInfo.IsNeutralCulture)
+                    {
+                        cultureInfo = LanguageHelper.GetSpecificCultureInfo(cultureInfo);
+                    }
+
+                    originalCultureInfo = current;
+                    Thread.CurrentThread.CurrentCulture = cultureInfo;
                 }
-                originalCultureInfo = Thread.CurrentThread.CurrentCulture;
-                Thread.CurrentThread.CurrentCulture = cultureInfo;
             }
         }
 
         public void Dispose()
         {
-            if (originalCultureInfo != null)
+            if (originalCultureInfo is not null)
                 Thread.CurrentThread.CurrentCulture = originalCultureInfo;
         }
     }

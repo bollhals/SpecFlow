@@ -369,7 +369,7 @@ namespace TechTalk.SpecFlow.RuntimeTests.Infrastructure
             TimeSpan duration;
             methodBindingInvokerMock.Verify(i => i.InvokeBinding(afterStepMock.Object, contextManagerStub.Object, null, testTracerStub.Object, out duration), Times.Never());
         }
-        
+
         [Fact]
         public void Should_cleanup_scenario_context_on_scenario_end()
         {
@@ -503,7 +503,7 @@ namespace TechTalk.SpecFlow.RuntimeTests.Infrastructure
             TimeSpan dummyOutTimeSpan;
             AnotherDummyClass actualInstance = null;
             methodBindingInvokerMock.Setup(s => s.InvokeBinding(It.IsAny<IBinding>(), It.IsAny<IContextManager>(),
-                    It.IsAny<object[]>(),It.IsAny<ITestTracer>(), out dummyOutTimeSpan))
+                    It.IsAny<object[]>(), It.IsAny<ITestTracer>(), out dummyOutTimeSpan))
                 .Callback(() => actualInstance = testExecutionEngine.ScenarioContext.ScenarioContainer.Resolve<AnotherDummyClass>());
 
             testExecutionEngine.OnScenarioInitialize(scenarioInfo);
@@ -683,7 +683,7 @@ namespace TechTalk.SpecFlow.RuntimeTests.Infrastructure
             RegisterFailingStepDefinition(expectedDuration);
 
             testExecutionEngine.Step(StepDefinitionKeyword.Given, null, "foo", null, null);
-            
+
             testTracerStub.Verify(tracer => tracer.TraceError(It.IsAny<Exception>(), It.IsAny<TimeSpan>()), Times.Once());
             executionDuration.Should().Be(expectedDuration);
         }

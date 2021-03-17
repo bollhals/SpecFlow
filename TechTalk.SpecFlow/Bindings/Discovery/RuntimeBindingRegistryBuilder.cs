@@ -34,8 +34,8 @@ namespace TechTalk.SpecFlow.Bindings.Discovery
         //internal - for testing
         internal bool BuildBindingsFromType(Type type)
         {
-// ReSharper disable PossibleMultipleEnumeration
-            var filteredAttributes = type.GetCustomAttributes(typeof(Attribute), true).Cast<Attribute>().Where(attr => _bindingSourceProcessor.CanProcessTypeAttribute(attr.GetType().FullName));
+            // ReSharper disable PossibleMultipleEnumeration
+            var filteredAttributes = type.GetCustomAttributes(typeof(Attribute), true).Cast<Attribute>().Where(attr => _bindingSourceProcessor.CanProcessTypeAttribute(attr.GetType().FullName)).ToArray();
             if (!_bindingSourceProcessor.PreFilterType(filteredAttributes.Select(attr => attr.GetType().FullName)))
                 return false;
 
@@ -51,18 +51,18 @@ namespace TechTalk.SpecFlow.Bindings.Discovery
 
             _bindingSourceProcessor.ProcessTypeDone();
             return true;
-// ReSharper restore PossibleMultipleEnumeration
+            // ReSharper restore PossibleMultipleEnumeration
         }
 
         private BindingSourceMethod CreateBindingSourceMethod(MethodInfo methodDefinition)
         {
             return new BindingSourceMethod
-                       {
-                           BindingMethod = new RuntimeBindingMethod(methodDefinition), 
-                           IsPublic = methodDefinition.IsPublic,
-                           IsStatic = methodDefinition.IsStatic,
-                           Attributes = GetAttributes(methodDefinition.GetCustomAttributes(true).Cast<Attribute>().Where(attr => _bindingSourceProcessor.CanProcessTypeAttribute(attr.GetType().FullName)))
-                       };
+            {
+                BindingMethod = new RuntimeBindingMethod(methodDefinition),
+                IsPublic = methodDefinition.IsPublic,
+                IsStatic = methodDefinition.IsStatic,
+                Attributes = GetAttributes(methodDefinition.GetCustomAttributes(true).Cast<Attribute>().Where(attr => _bindingSourceProcessor.CanProcessMethodAttribute(attr.GetType().FullName)))
+            };
         }
 
         private IBindingType CreateBindingType(Type type)
@@ -73,15 +73,15 @@ namespace TechTalk.SpecFlow.Bindings.Discovery
         private BindingSourceType CreateBindingSourceType(Type type, IEnumerable<Attribute> filteredAttributes)
         {
             return new BindingSourceType
-                       {
-                           BindingType = CreateBindingType(type),
-                           IsAbstract = type.IsAbstract,
-                           IsClass = type.IsClass,
-                           IsPublic = type.IsPublic,
-                           IsNested = TypeHelper.IsNested(type),
-                           IsGenericTypeDefinition = type.IsGenericTypeDefinition,
-                           Attributes = GetAttributes(filteredAttributes)
-                       };
+            {
+                BindingType = CreateBindingType(type),
+                IsAbstract = type.IsAbstract,
+                IsClass = type.IsClass,
+                IsPublic = type.IsPublic,
+                IsNested = TypeHelper.IsNested(type),
+                IsGenericTypeDefinition = type.IsGenericTypeDefinition,
+                Attributes = GetAttributes(filteredAttributes)
+            };
         }
 
         private BindingSourceAttribute CreateAttribute(Attribute attribute)
@@ -111,11 +111,11 @@ namespace TechTalk.SpecFlow.Bindings.Discovery
             var mostComplexCtor = attributeType.GetConstructors(BindingFlags.Instance | BindingFlags.Public).OrderByDescending(ctor => ctor.GetParameters().Length).FirstOrDefault();
 
             return new BindingSourceAttribute
-                       {
-                           AttributeType = CreateBindingType(attributeType), 
-                           AttributeValues = mostComplexCtor == null ? new IBindingSourceAttributeValueProvider[0] : mostComplexCtor.GetParameters().Select(p => FindAttributeConstructorArg(p, namedAttributeValues)).ToArray(),
-                           NamedAttributeValues = namedAttributeValues
-                       };
+            {
+                AttributeType = CreateBindingType(attributeType),
+                AttributeValues = mostComplexCtor == null ? new IBindingSourceAttributeValueProvider[0] : mostComplexCtor.GetParameters().Select(p => FindAttributeConstructorArg(p, namedAttributeValues)).ToArray(),
+                NamedAttributeValues = namedAttributeValues
+            };
         }
 
         private IBindingSourceAttributeValueProvider FindAttributeConstructorArg(ParameterInfo parameterInfo, Dictionary<string, IBindingSourceAttributeValueProvider> namedAttributeValues)

@@ -5,9 +5,8 @@ namespace TechTalk.SpecFlow.Analytics.UserId
 {
     public class FileUserIdStore : IUserUniqueIdStore
     {
-        private static readonly string appDataFolder = Environment.GetFolderPath(
-                                                                    Environment.SpecialFolder.ApplicationData);
-        public static readonly string UserIdFilePath = Path.Combine(appDataFolder, "SpecFlow", "userid");
+        private static string _userIdFilePath;
+        public static string UserIdFilePath => _userIdFilePath ??= Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SpecFlow", "userid");
 
         private readonly Lazy<string> _lazyUniqueUserId;
         private readonly IFileService _fileService;
@@ -52,7 +51,7 @@ namespace TechTalk.SpecFlow.Analytics.UserId
 
         private bool IsValidGuid(string guid)
         {
-            return Guid.TryParse(guid, out var parsedGuid);
+            return Guid.TryParse(guid, out _);
         }
 
         private string GenerateAndPersistUserId()

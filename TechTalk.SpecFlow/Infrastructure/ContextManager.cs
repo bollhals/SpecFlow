@@ -1,7 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
-using System.Linq;
 using BoDi;
 using TechTalk.SpecFlow.Bindings;
 using TechTalk.SpecFlow.Tracing;
@@ -10,7 +8,7 @@ namespace TechTalk.SpecFlow.Infrastructure
 {
     public class ContextManager : IContextManager, IDisposable
     {
-        private class InternalContextManager<TContext>: IDisposable where TContext : SpecFlowContext
+        private class InternalContextManager<TContext> : IDisposable where TContext : SpecFlowContext
         {
             private readonly ITestTracer testTracer;
             private TContext instance;
@@ -70,7 +68,7 @@ namespace TechTalk.SpecFlow.Infrastructure
         /// correctly even when there is a nesting of steps calling steps calling steps.
         /// </summary>
         /// <typeparam name="TContext">A type derived from SpecFlowContext, which needs to be managed  in a way</typeparam>
-        private class StackedInternalContextManager<TContext> : IDisposable where TContext : SpecFlowContext
+        private sealed class StackedInternalContextManager<TContext> : IDisposable where TContext : SpecFlowContext
         {
             private readonly ITestTracer testTracer;
             private readonly Stack<TContext> instances = new Stack<TContext>();
@@ -85,11 +83,11 @@ namespace TechTalk.SpecFlow.Infrastructure
                 get { return IsEmpty ? null : instances.Peek(); }
             }
 
-            public bool IsEmpty => !instances.Any();
+            public bool IsEmpty => instances.Count == 0;
 
             public void Push(TContext newInstance)
             {
-                instances.Push(newInstance);                
+                instances.Push(newInstance);
             }
 
             public void RemoveTop()
@@ -149,9 +147,9 @@ namespace TechTalk.SpecFlow.Infrastructure
             get { return scenarioContextManager.Instance; }
         }
 
-        public ScenarioStepContext StepContext 
+        public ScenarioStepContext StepContext
         {
-            get{return stepContextManager.Instance;} 
+            get { return stepContextManager.Instance; }
         }
 
         public TestThreadContext TestThreadContext { get; private set; }
@@ -201,7 +199,7 @@ namespace TechTalk.SpecFlow.Infrastructure
 
         public void CleanupScenarioContext()
         {
-            scenarioContextManager.Cleanup();            
+            scenarioContextManager.Cleanup();
         }
 
         public void InitializeStepContext(StepInfo stepInfo)

@@ -4,12 +4,13 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
+using BoDi;
 using FluentAssertions;
 using Xunit;
 
 namespace TechTalk.SpecFlow.RuntimeTests
 {
-    
+
     public class TestRunnerManagerStaticApiTest
     {
         private readonly Assembly thisAssembly = Assembly.GetExecutingAssembly();

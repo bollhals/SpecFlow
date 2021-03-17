@@ -45,16 +45,12 @@ namespace TechTalk.SpecFlow.Bindings
 
         public virtual IEnumerable<IHookBinding> GetHooks(HookType bindingEvent)
         {
-            return GetHookList(bindingEvent);
-        }
-
-        private IEnumerable<IHookBinding> GetHookList(HookType bindingEvent)
-        {
-            List<IHookBinding> list;
-            if (hooks.TryGetValue(bindingEvent, out list))
+            if (hooks.TryGetValue(bindingEvent, out var list))
+            {
                 return list;
+            }
 
-            return Enumerable.Empty<IHookBinding>();
+            return Array.Empty<IHookBinding>();
         }
 
         public virtual IEnumerable<IStepArgumentTransformationBinding> GetStepTransformations()
@@ -67,24 +63,20 @@ namespace TechTalk.SpecFlow.Bindings
             stepDefinitions.Add(stepDefinitionBinding);
         }
 
-        private List<IHookBinding> GetHookListForRegister(HookType bindingEvent)
-        {
-            List<IHookBinding> list;
-            if (!hooks.TryGetValue(bindingEvent, out list))
-            {
-                list = new List<IHookBinding>();
-                hooks.Add(bindingEvent, list);
-            }
-
-            return list;
-        }
-
         public virtual void RegisterHookBinding(IHookBinding hookBinding)
         {
-            List<IHookBinding> hookRegistry = GetHookListForRegister(hookBinding.HookType);
-
-            if (!hookRegistry.Contains(hookBinding))
-                hookRegistry.Add(hookBinding);
+            if (hooks.TryGetValue(hookBinding.HookType, out var list))
+            {
+                if (!list.Contains(hookBinding))
+                {
+                    list.Add(hookBinding);
+                }
+            }
+            else
+            {
+                list = new List<IHookBinding>(1) { hookBinding };
+                hooks.Add(hookBinding.HookType, list);
+            }
         }
 
         public virtual void RegisterStepArgumentTransformationBinding(IStepArgumentTransformationBinding stepArgumentTransformationBinding)

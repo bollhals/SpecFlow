@@ -45,7 +45,7 @@ namespace TechTalk.SpecFlow.Bindings
         public object Convert(object value, IBindingType typeToConvertTo, CultureInfo cultureInfo)
         {
             if (value == null) throw new ArgumentNullException("value");
-            
+
             var stepTransformation = GetMatchingStepTransformation(value, typeToConvertTo, true);
             if (stepTransformation != null)
                 return DoTransform(stepTransformation, value, cultureInfo);
@@ -63,10 +63,9 @@ namespace TechTalk.SpecFlow.Bindings
             if (stepTransformation.Regex != null && value is string)
                 arguments = GetStepTransformationArgumentsFromRegex(stepTransformation, (string)value, cultureInfo);
             else
-                arguments = new object[] {value};
+                arguments = new object[] { value };
 
-            TimeSpan duration;
-            return bindingInvoker.InvokeBinding(stepTransformation, contextManager, arguments, testTracer, out duration);
+            return bindingInvoker.InvokeBinding(stepTransformation, contextManager, arguments, testTracer, out _);
         }
 
         private object[] GetStepTransformationArgumentsFromRegex(IStepArgumentTransformationBinding stepTransformation, string stepSnippet, CultureInfo cultureInfo)
@@ -81,7 +80,7 @@ namespace TechTalk.SpecFlow.Bindings
 
         public bool CanConvert(object value, IBindingType typeToConvertTo, CultureInfo cultureInfo)
         {
-            if (value == null) throw new ArgumentNullException("value");           
+            if (value == null) throw new ArgumentNullException("value");
 
             var stepTransformation = GetMatchingStepTransformation(value, typeToConvertTo, false);
             if (stepTransformation != null)
@@ -100,13 +99,13 @@ namespace TechTalk.SpecFlow.Bindings
                 return false;
 
             if (stepTransformationBinding.Regex != null && valueToConvert is string)
-                return stepTransformationBinding.Regex.IsMatch((string) valueToConvert);
-            
+                return stepTransformationBinding.Regex.IsMatch((string)valueToConvert);
+
             var transformationFirstArgumentTypeName = stepTransformationBinding.Method.Parameters.FirstOrDefault()?.Type.FullName;
-            
+
             var isTableStepTransformation = transformationFirstArgumentTypeName == typeof(Table).FullName;
             var valueIsTable = valueToConvert is Table;
-            
+
             return isTableStepTransformation == valueIsTable;
         }
 
@@ -115,13 +114,13 @@ namespace TechTalk.SpecFlow.Bindings
             if (!(typeToConvertTo is RuntimeBindingType))
                 throw new SpecFlowException("The StepArgumentTypeConverter can be used with runtime types only.");
 
-            return ConvertSimple(((RuntimeBindingType) typeToConvertTo).Type, value, cultureInfo);
+            return ConvertSimple(((RuntimeBindingType)typeToConvertTo).Type, value, cultureInfo);
         }
 
         private static object ConvertSimple(Type typeToConvertTo, object value, CultureInfo cultureInfo)
         {
             if (typeToConvertTo.IsEnum && value is string)
-                return ConvertToAnEnum(typeToConvertTo, (string) value);
+                return ConvertToAnEnum(typeToConvertTo, (string)value);
 
             if (typeToConvertTo == typeof(Guid?) && string.IsNullOrEmpty(value as string))
                 return null;
@@ -129,15 +128,15 @@ namespace TechTalk.SpecFlow.Bindings
             if (typeToConvertTo == typeof(Guid) || typeToConvertTo == typeof(Guid?))
                 return new GuidValueRetriever().GetValue(value as string);
 
-            return TryConvertWithTypeConverter(typeToConvertTo, value, cultureInfo, out var convertedValue) 
-                ? convertedValue : 
+            return TryConvertWithTypeConverter(typeToConvertTo, value, cultureInfo, out var convertedValue)
+                ? convertedValue :
                 System.Convert.ChangeType(value, typeToConvertTo, cultureInfo);
         }
 
         private static bool TryConvertWithTypeConverter(Type typeToConvertTo, object value, CultureInfo cultureInfo, out object result)
         {
             var typeConverter = TypeDescriptor.GetConverter(typeToConvertTo);
-            
+
             if (typeConverter.CanConvertFrom(value.GetType()))
             {
                 try

@@ -47,7 +47,6 @@ namespace TechTalk.SpecFlow.Plugins
                     break;
                 default: break;
             }
-
         }
     }
 }

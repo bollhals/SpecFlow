@@ -1,5 +1,4 @@
-﻿using System;
-using Io.Cucumber.Messages;
+﻿using Io.Cucumber.Messages;
 
 namespace TechTalk.SpecFlow.CucumberMessages
 {

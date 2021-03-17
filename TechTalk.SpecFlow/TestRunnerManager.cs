@@ -104,17 +104,23 @@ namespace TechTalk.SpecFlow
         public void FireTestRunEnd()
         {
             // this method must not be called multiple times
-            var onTestRunnerEndExecutionHost = testRunnerRegistry.Values.FirstOrDefault();
-            if (onTestRunnerEndExecutionHost != null)
-                onTestRunnerEndExecutionHost.OnTestRunEnd();
+            foreach (var pair in testRunnerRegistry)
+            {
+                pair.Value.OnTestRunEnd();
+                // Only call it for the first entry
+                return;
+            }
         }
 
         public void FireTestRunStart()
         {
             // this method must not be called multiple times
-            var onTestRunnerEndExecutionHost = testRunnerRegistry.Values.FirstOrDefault();
-            if (onTestRunnerEndExecutionHost != null)
-                onTestRunnerEndExecutionHost.OnTestRunStart();
+            foreach (var pair in testRunnerRegistry)
+            {
+                pair.Value.OnTestRunStart();
+                // Only call it for the first entry
+                return;
+            }
         }
 
         protected virtual ITestRunner CreateTestRunnerInstance()
@@ -138,7 +144,7 @@ namespace TechTalk.SpecFlow
             }
             catch (Exception ex)
             {
-                testTracer.TraceError(ex,TimeSpan.Zero);
+                testTracer.TraceError(ex, TimeSpan.Zero);
                 throw;
             }
         }

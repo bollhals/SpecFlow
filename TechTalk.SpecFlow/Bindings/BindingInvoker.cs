@@ -1,14 +1,9 @@
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.Globalization;
 using System.Linq;
-using System.Linq.Expressions;
 using System.Reflection;
-using System.Threading.Tasks;
 using TechTalk.SpecFlow.Bindings.Reflection;
 using TechTalk.SpecFlow.Compatibility;
-using TechTalk.SpecFlow.Configuration;
 using TechTalk.SpecFlow.ErrorHandling;
 using TechTalk.SpecFlow.Infrastructure;
 using TechTalk.SpecFlow.Tracing;
@@ -17,6 +12,8 @@ namespace TechTalk.SpecFlow.Bindings
 {
     public class BindingInvoker : IBindingInvoker
     {
+        private static readonly Stopwatch watch = Stopwatch.StartNew();
+
         protected readonly Configuration.SpecFlowConfiguration specFlowConfiguration;
         protected readonly IErrorProvider errorProvider;
         protected readonly ISynchronousBindingDelegateInvoker synchronousBindingDelegateInvoker;
@@ -30,225 +27,238 @@ namespace TechTalk.SpecFlow.Bindings
 
         public virtual object InvokeBinding(IBinding binding, IContextManager contextManager, object[] arguments, ITestTracer testTracer, out TimeSpan duration)
         {
-            MethodInfo methodInfo;
-            Delegate bindingAction;
-            EnsureReflectionInfo(binding, out methodInfo, out bindingAction);
-            Stopwatch stopwatch = new Stopwatch();
+            EnsureReflectionInfo(binding, out var methodInfo, out var bindingAction);
+            var startTime = watch.Elapsed;
             try
             {
-                stopwatch.Start();
                 object result;
                 using (CreateCultureInfoScope(contextManager))
                 {
-                    object[] invokeArgs = new object[arguments == null ? 1 : arguments.Length + 1];
-                    if (arguments != null)
-                        Array.Copy(arguments, 0, invokeArgs, 1, arguments.Length);
-                    invokeArgs[0] = contextManager;
+                    if (methodInfo.IsStatic)
+                    {
+                        result = synchronousBindingDelegateInvoker.InvokeDelegateSynchronously(bindingAction, arguments);
+                    }
+                    else
+                    {
+                        object[] invokeArgs;
+                        if (arguments is null)
+                        {
+                            invokeArgs = new object[1];
+                        }
+                        else
+                        {
+                            invokeArgs = new object[arguments.Length + 1];
+                            arguments.CopyTo(invokeArgs, 1);
+                        }
 
-                    result = synchronousBindingDelegateInvoker
-                        .InvokeDelegateSynchronously(bindingAction, invokeArgs);
-
-                    stopwatch.Stop();
+                        invokeArgs[0] = contextManager.ScenarioContext.GetBindingInstance(methodInfo.ReflectedType);
+                        result = synchronousBindingDelegateInvoker.InvokeDelegateSynchronously(bindingAction, invokeArgs);
+                    }
                 }
 
-                if (specFlowConfiguration.TraceTimings && stopwatch.Elapsed >= specFlowConfiguration.MinTracedDuration)
+                duration = watch.Elapsed - startTime;
+
+                if (specFlowConfiguration.TraceTimings && duration >= specFlowConfiguration.MinTracedDuration)
                 {
-                    testTracer.TraceDuration(stopwatch.Elapsed, binding.Method, arguments);
+                    testTracer.TraceDuration(duration, binding.Method, arguments);
                 }
 
-                duration = stopwatch.Elapsed;
                 return result;
             }
             catch (ArgumentException ex)
             {
-                stopwatch.Stop();
-                duration = stopwatch.Elapsed;
+                duration = watch.Elapsed - startTime;
                 throw errorProvider.GetCallError(binding.Method, ex);
             }
             catch (TargetInvocationException invEx)
             {
+                duration = watch.Elapsed - startTime;
                 var ex = invEx.InnerException;
                 ex = ex.PreserveStackTrace(errorProvider.GetMethodText(binding.Method));
-                stopwatch.Stop();
-                duration = stopwatch.Elapsed;
                 throw ex;
             }
             catch (AggregateException aggregateEx)
             {
+                duration = watch.Elapsed - startTime;
                 var ex = aggregateEx.InnerExceptions.First();
                 ex = ex.PreserveStackTrace(errorProvider.GetMethodText(binding.Method));
-                stopwatch.Stop();
-                duration = stopwatch.Elapsed;
                 throw ex;
             }
             catch (Exception)
             {
-                stopwatch.Stop();
-                duration = stopwatch.Elapsed;
+                duration = watch.Elapsed - startTime;
                 throw;
             }
         }
 
         protected virtual CultureInfoScope CreateCultureInfoScope(IContextManager contextManager)
         {
-            var cultureInfo = CultureInfo.CurrentCulture;
-            if (contextManager.FeatureContext != null)
-            {
-                cultureInfo = contextManager.FeatureContext.BindingCulture;
-            }
-            return new CultureInfoScope(cultureInfo);
+            return new CultureInfoScope(contextManager.FeatureContext);
         }
 
         protected void EnsureReflectionInfo(IBinding binding, out MethodInfo methodInfo, out Delegate bindingAction)
         {
             var methodBinding = binding as MethodBinding;
-            if (methodBinding == null)
+            if (methodBinding is null)
                 throw new SpecFlowException("The binding method cannot be used for reflection: " + binding);
 
             methodInfo = methodBinding.Method.AssertMethodInfo();
-
-            if (methodBinding.cachedBindingDelegate == null)
-            {
-                methodBinding.cachedBindingDelegate = CreateMethodDelegate(methodInfo);
-            }
-
             bindingAction = methodBinding.cachedBindingDelegate;
+            if (bindingAction is null)
+            {
+                bindingAction = methodBinding.cachedBindingDelegate = CreateMethodDelegate(methodInfo);
+            }
         }
 
         protected virtual Delegate CreateMethodDelegate(MethodInfo method)
         {
-            List<ParameterExpression> parameters = new List<ParameterExpression>();
-            parameters.Add(Expression.Parameter(typeof(IContextManager), "__contextManager"));
-            parameters.AddRange(method.GetParameters().Select(parameterInfo => Expression.Parameter(parameterInfo.ParameterType, parameterInfo.Name)));
-            var methodArguments = parameters.Skip(1).Cast<Expression>().ToArray();
-            var contextManagerArg = parameters[0];
-
-            LambdaExpression lambda;
-
-            var delegateType = GetDelegateType(parameters.Select(p => p.Type).ToArray(), method.ReturnType);
-
             if (method.IsStatic)
             {
-                lambda = Expression.Lambda(
-                    delegateType,
-                    GetBindingMethodCallExpression(null, method, methodArguments),
-                    parameters.ToArray());
+                return CreateStaticMethodDelegate(method);
+            }
+
+            return CreateInstanceMethodDelegate(method);
+        }
+
+        private Delegate CreateStaticMethodDelegate(MethodInfo method)
+        {
+            var parameters = method.GetParameters();
+
+            Type[] parameterTypes;
+            if (parameters.Length == 0)
+            {
+                parameterTypes = Type.EmptyTypes;
             }
             else
             {
-                var getInstanceMethod = ExpressionMemberAccessor.GetMethodInfo((ScenarioContext sc) => sc.GetBindingInstance(null));
-                Debug.Assert(getInstanceMethod != null, "GetBindingInstance not found");
-                var scenarioContextProperty = ExpressionMemberAccessor.GetPropertyInfo((IContextManager cm) => cm.ScenarioContext);
-                Debug.Assert(scenarioContextProperty != null, "ScenarioContext not found");
-
-                // this generates an expression call, like
-                // ((MyBingingClass)__contextManager.ScenarioContext.GetBindingInstance(typeof(MyBingingClass))).MyBindingMethod(...)
-
-                lambda = Expression.Lambda(
-                    delegateType,
-                    GetBindingMethodCallExpression(
-                        Expression.Convert(
-                            Expression.Call(
-                                Expression.Property(
-                                    contextManagerArg,
-                                    scenarioContextProperty), 
-                                getInstanceMethod,
-                                Expression.Constant(method.ReflectedType, typeof(Type))),
-                            method.ReflectedType), 
-                        method, 
-                        methodArguments),
-                    parameters.ToArray());
+                parameterTypes = new Type[parameters.Length];
+                for (var i = 0; i < parameters.Length; i++)
+                {
+                    parameterTypes[i] = parameters[i].ParameterType;
+                }
             }
 
-#if WINDOWS_PHONE
-            return ExpressionCompiler.ExpressionCompiler.Compile(lambda);
-#else
-            return lambda.Compile();
-#endif
+            return method.CreateDelegate(GetDelegateType(parameterTypes, method.ReturnType), null);
         }
 
-        protected virtual Expression GetBindingMethodCallExpression(Expression instance, MethodInfo method, Expression[] argumentsExpressions)
+        private Delegate CreateInstanceMethodDelegate(MethodInfo method)
         {
-            return Expression.Call(instance, method, argumentsExpressions);
-        }
+            var instanceType = method.ReflectedType;
+            var parameters = method.GetParameters();
 
+            var parameterTypes = new Type[parameters.Length + 1];
+            parameterTypes[0] = instanceType;
+
+            for (var i = 0; i < parameters.Length; i++)
+            {
+                var parameterInfo = parameters[i];
+                parameterTypes[i + 1] = parameterInfo.ParameterType;
+            }
+
+            return method.CreateDelegate(GetDelegateType(parameterTypes, method.ReturnType), null);
+        }
 
         #region extended action types
-        static readonly Type[] actionTypes = new[] { typeof(Action), 
-                                                     typeof(Action<>),                          typeof(Action<,>),                          typeof(Action<,,>),                         typeof(Action<,,,>),                            typeof(ExtendedAction<,,,,>), 
-                                                     typeof(ExtendedAction<,,,,,>),             typeof(ExtendedAction<,,,,,,>),             typeof(ExtendedAction<,,,,,,,>),            typeof(ExtendedAction<,,,,,,,,>),               typeof(ExtendedAction<,,,,,,,,,>),
-                                                     typeof(ExtendedAction<,,,,,,,,,,>),        typeof(ExtendedAction<,,,,,,,,,,,>),        typeof(ExtendedAction<,,,,,,,,,,,,>),       typeof(ExtendedAction<,,,,,,,,,,,,,>),          typeof(ExtendedAction<,,,,,,,,,,,,,,>),
-                                                     typeof(ExtendedAction<,,,,,,,,,,,,,,,>),   typeof(ExtendedAction<,,,,,,,,,,,,,,,,>),   typeof(ExtendedAction<,,,,,,,,,,,,,,,,,>),  typeof(ExtendedAction<,,,,,,,,,,,,,,,,,,>),     typeof(ExtendedAction<,,,,,,,,,,,,,,,,,,,>),
-                                                   };
-
-        public delegate void ExtendedAction<T1, T2, T3, T4, T5>                                                                         (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5);
-        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6>                                                                     (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6);
-        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7>                                                                 (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7);
-        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8>                                                             (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8);
-        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9>                                                         (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9);
-        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10>                                                    (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10);
-        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11>                                               (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11);
-        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12>                                          (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12);
-        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13>                                     (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13);
-        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14>                                (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14);
-        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15>                           (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15);
-        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16>                      (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15, T16 arg16);
-        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17>                 (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15, T16 arg16, T17 arg17);
-        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18>            (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15, T16 arg16, T17 arg17, T18 arg18);
-        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19>       (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15, T16 arg16, T17 arg17, T18 arg18, T19 arg19);
-        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20>  (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15, T16 arg16, T17 arg17, T18 arg18, T19 arg19, T20 arg20);
+        public delegate void ExtendedAction<T1, T2, T3, T4, T5>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5);
+        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6);
+        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7);
+        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8);
+        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9);
+        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10);
+        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11);
+        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12);
+        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13);
+        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14);
+        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15);
+        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15, T16 arg16);
+        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15, T16 arg16, T17 arg17);
+        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15, T16 arg16, T17 arg17, T18 arg18);
+        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15, T16 arg16, T17 arg17, T18 arg18, T19 arg19);
+        public delegate void ExtendedAction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15, T16 arg16, T17 arg17, T18 arg18, T19 arg19, T20 arg20);
 
         protected Type GetActionType(Type[] typeArgs)
         {
-            if (typeArgs.Length >= actionTypes.Length)
+            Type openType;
+            switch (typeArgs.Length)
             {
-                throw errorProvider.GetTooManyBindingParamError(actionTypes.Length - 1);
+                case 00: return typeof(Action);
+                case 01: openType = typeof(Action<>); break;
+                case 02: openType = typeof(Action<,>); break;
+                case 03: openType = typeof(Action<,,>); break;
+                case 04: openType = typeof(Action<,,,>); break;
+                case 05: openType = typeof(ExtendedAction<,,,,>); break;
+                case 06: openType = typeof(ExtendedAction<,,,,,>); break;
+                case 07: openType = typeof(ExtendedAction<,,,,,,>); break;
+                case 08: openType = typeof(ExtendedAction<,,,,,,,>); break;
+                case 09: openType = typeof(ExtendedAction<,,,,,,,,>); break;
+                case 10: openType = typeof(ExtendedAction<,,,,,,,,,>); break;
+                case 11: openType = typeof(ExtendedAction<,,,,,,,,,,>); break;
+                case 12: openType = typeof(ExtendedAction<,,,,,,,,,,,>); break;
+                case 13: openType = typeof(ExtendedAction<,,,,,,,,,,,,>); break;
+                case 14: openType = typeof(ExtendedAction<,,,,,,,,,,,,,>); break;
+                case 15: openType = typeof(ExtendedAction<,,,,,,,,,,,,,,>); break;
+                case 16: openType = typeof(ExtendedAction<,,,,,,,,,,,,,,,>); break;
+                case 17: openType = typeof(ExtendedAction<,,,,,,,,,,,,,,,,>); break;
+                case 18: openType = typeof(ExtendedAction<,,,,,,,,,,,,,,,,,>); break;
+                case 19: openType = typeof(ExtendedAction<,,,,,,,,,,,,,,,,,,>); break;
+                case 20: openType = typeof(ExtendedAction<,,,,,,,,,,,,,,,,,,,>); break;
+                default: throw errorProvider.GetTooManyBindingParamError(20);
             }
-            if (typeArgs.Length == 0)
-            {
-                return actionTypes[typeArgs.Length];
-            }
-            return actionTypes[typeArgs.Length].MakeGenericType(typeArgs);
-        }
-        #endregion   
-        
-        #region extended func types
-        static readonly Type[] funcTypes = new[] { typeof(Func<>), 
-                                                   typeof(Func<,>),                         typeof(Func<,,>),                           typeof(Func<,,,>),                          typeof(Func<,,,,>),                         typeof(ExtendedFunc<,,,,,>), 
-                                                   typeof(ExtendedFunc<,,,,,,>),            typeof(ExtendedFunc<,,,,,,,>),              typeof(ExtendedFunc<,,,,,,,,>),             typeof(ExtendedFunc<,,,,,,,,,>),            typeof(ExtendedFunc<,,,,,,,,,,>),
-                                                   typeof(ExtendedFunc<,,,,,,,,,,,>),       typeof(ExtendedFunc<,,,,,,,,,,,,>),         typeof(ExtendedFunc<,,,,,,,,,,,,,>),        typeof(ExtendedFunc<,,,,,,,,,,,,,,>),       typeof(ExtendedFunc<,,,,,,,,,,,,,,,>),
-                                                   typeof(ExtendedFunc<,,,,,,,,,,,,,,,,>),  typeof(ExtendedFunc<,,,,,,,,,,,,,,,,,>),    typeof(ExtendedFunc<,,,,,,,,,,,,,,,,,,>),   typeof(ExtendedFunc<,,,,,,,,,,,,,,,,,,,>),  typeof(ExtendedFunc<,,,,,,,,,,,,,,,,,,,,>),
-                                                 };
 
-        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, TResult>                                                                           (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5);
-        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, TResult>                                                                       (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6);
-        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, TResult>                                                                   (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7);
-        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, TResult>                                                               (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8);
-        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, TResult>                                                           (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9);
-        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, TResult>                                                      (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10);
-        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, TResult>                                                 (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11);
-        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, TResult>                                            (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12);
-        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, TResult>                                       (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13);
-        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, TResult>                                  (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14);
-        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, TResult>                             (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15);
-        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, TResult>                        (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15, T16 arg16);
-        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, TResult>                   (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15, T16 arg16, T17 arg17);
-        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, TResult>              (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15, T16 arg16, T17 arg17, T18 arg18);
-        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, TResult>         (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15, T16 arg16, T17 arg17, T18 arg18, T19 arg19);
-        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, TResult>    (T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15, T16 arg16, T17 arg17, T18 arg18, T19 arg19, T20 arg20);
+            return openType.MakeGenericType(typeArgs);
+        }
+        #endregion
+
+        #region extended func types
+        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, TResult>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5);
+        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, TResult>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6);
+        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, TResult>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7);
+        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, TResult>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8);
+        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, TResult>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9);
+        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, TResult>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10);
+        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, TResult>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11);
+        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, TResult>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12);
+        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, TResult>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13);
+        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, TResult>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14);
+        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, TResult>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15);
+        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, TResult>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15, T16 arg16);
+        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, TResult>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15, T16 arg16, T17 arg17);
+        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, TResult>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15, T16 arg16, T17 arg17, T18 arg18);
+        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, TResult>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15, T16 arg16, T17 arg17, T18 arg18, T19 arg19);
+        public delegate TResult ExtendedFunc<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, TResult>(T1 arg1, T2 arg2, T3 arg3, T4 arg4, T5 arg5, T6 arg6, T7 arg7, T8 arg8, T9 arg9, T10 arg10, T11 arg11, T12 arg12, T13 arg13, T14 arg14, T15 arg15, T16 arg16, T17 arg17, T18 arg18, T19 arg19, T20 arg20);
 
         protected Type GetFuncType(Type[] typeArgs, Type resultType)
         {
-            if (typeArgs.Length >= actionTypes.Length)
+            Type openType;
+            switch (typeArgs.Length)
             {
-                throw errorProvider.GetTooManyBindingParamError(actionTypes.Length - 1);
+                case 00: openType = typeof(Func<>); break;
+                case 01: openType = typeof(Func<,>); break;
+                case 02: openType = typeof(Func<,,>); break;
+                case 03: openType = typeof(Func<,,,>); break;
+                case 04: openType = typeof(Func<,,,,>); break;
+                case 05: openType = typeof(ExtendedFunc<,,,,,>); break;
+                case 06: openType = typeof(ExtendedFunc<,,,,,,>); break;
+                case 07: openType = typeof(ExtendedFunc<,,,,,,,>); break;
+                case 08: openType = typeof(ExtendedFunc<,,,,,,,,>); break;
+                case 09: openType = typeof(ExtendedFunc<,,,,,,,,,>); break;
+                case 10: openType = typeof(ExtendedFunc<,,,,,,,,,,>); break;
+                case 11: openType = typeof(ExtendedFunc<,,,,,,,,,,,>); break;
+                case 12: openType = typeof(ExtendedFunc<,,,,,,,,,,,,>); break;
+                case 13: openType = typeof(ExtendedFunc<,,,,,,,,,,,,,>); break;
+                case 14: openType = typeof(ExtendedFunc<,,,,,,,,,,,,,,>); break;
+                case 15: openType = typeof(ExtendedFunc<,,,,,,,,,,,,,,,>); break;
+                case 16: openType = typeof(ExtendedFunc<,,,,,,,,,,,,,,,,>); break;
+                case 17: openType = typeof(ExtendedFunc<,,,,,,,,,,,,,,,,,>); break;
+                case 18: openType = typeof(ExtendedFunc<,,,,,,,,,,,,,,,,,,>); break;
+                case 19: openType = typeof(ExtendedFunc<,,,,,,,,,,,,,,,,,,,>); break;
+                case 20: openType = typeof(ExtendedFunc<,,,,,,,,,,,,,,,,,,,,>); break;
+                default: throw errorProvider.GetTooManyBindingParamError(20);
             }
-            if (typeArgs.Length == 0)
-            {
-                return funcTypes[0].MakeGenericType(resultType);
-            }
-            var genericTypeArgs = typeArgs.Concat(new[] {resultType}).ToArray();
-            return funcTypes[typeArgs.Length].MakeGenericType(genericTypeArgs);
+
+            Array.Resize(ref typeArgs, typeArgs.Length + 1);
+            typeArgs[typeArgs.Length - 1] = resultType;
+            return openType.MakeGenericType(typeArgs);
         }
 
         protected Type GetDelegateType(Type[] typeArgs, Type resultType)
